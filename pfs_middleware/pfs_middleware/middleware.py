@@ -2135,6 +2135,8 @@ class PfsMiddleware(object):
 
         :returns: the result of the RPC, whatever that looks like
 
+        :raises: socket.error if there was an error with the connection
+
         :raises: utils.RpcTimeout if the RPC takes too long
 
         :raises: utils.RpcError if the RPC returns an error. Inspecting this
@@ -2146,36 +2148,10 @@ class PfsMiddleware(object):
         rpc_method = rpc_request['method']
         start_time = time.time()
         try:
-            return self._rpc_call([ctx.proxyfsd_addrinfo], rpc_request)
-        finally:
-            duration = time.time() - start_time
-            self.logger.debug("RPC %s took %.6fs", rpc_method, duration)
-
-    def _rpc_call(self, addrinfos, rpc_request):
-        addrinfos = set(addrinfos)
-
-        # We can get fast errors or slow errors here; we retry across all
-        # hosts on fast errors, but immediately raise a slow error. HTTP
-        # clients won't wait forever for a response, so we can't retry slow
-        # errors across all hosts.
-        #
-        # Fast errors are things like "connection refused" or "no route to
-        # host". Slow errors are timeouts.
-        result = None
-        while addrinfos:
-            addrinfo = addrinfos.pop()
-            rpc_client = utils.JsonRpcClient(addrinfo)
-            try:
-                result = rpc_client.call(rpc_request,
-                                         self.proxyfsd_rpc_timeout)
-            except socket.error as err:
-                if addrinfos:
-                    self.logger.debug("Error communicating with %r: %s. "
-                                      "Trying again with another host.",
-                                      addrinfo, err)
-                    continue
-                else:
-                    raise
+            # Unlike with the bimodal check, only one host can answer our queries.
+            # There's no chance for a retry; we wait or we fail.
+            rpc_client = utils.JsonRpcClient(ctx.proxyfsd_addrinfo)
+            result = rpc_client.call(rpc_request, self.proxyfsd_rpc_timeout)
 
             errstr = result.get("error")
             if errstr:
@@ -2183,3 +2159,6 @@ class PfsMiddleware(object):
                 raise utils.RpcError(errno, errstr)
 
             return result["result"]
+        finally:
+            duration = time.time() - start_time
+            self.logger.debug("RPC %s took %.6fs", rpc_method, duration)
